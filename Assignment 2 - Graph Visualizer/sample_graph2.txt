@@ -1,0 +1,19 @@
+* h
+* i
+* j
+* k
+* l
+* m
+* n
+- h i
+- h j
+- i k
+- j l
+- j m
+- k n
+- l m
+- m n
+- n h
+- i j
+- k h
+- l i
