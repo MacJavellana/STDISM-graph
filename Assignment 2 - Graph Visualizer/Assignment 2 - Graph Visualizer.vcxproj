@@ -155,10 +155,6 @@
     <ClInclude Include="Graph.h" />
     <ClInclude Include="GraphVisualizer.h" />
   </ItemGroup>
-  <ItemGroup>
-    <Text Include="sample_graph.txt" />
-    <Text Include="sample_graph2.txt" />
-  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

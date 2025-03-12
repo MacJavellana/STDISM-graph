@@ -2,7 +2,8 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include "GraphVisualizer.h"
+#include <chrono>
+
 bool useParallel = true;
 Graph parseGraphFile(const std::string& filename) {
     Graph graph;
@@ -10,13 +11,12 @@ Graph parseGraphFile(const std::string& filename) {
     std::string line;
 
     if (!file.is_open()) {
-        std::cout << "Error opening file: " << filename << std::endl;
+        std::cerr << "Error opening file: " << filename << std::endl;
         return graph;
     }
 
     while (std::getline(file, line)) {
         if (line.empty()) continue;
-
         std::istringstream iss(line);
         char type;
         iss >> type;
@@ -28,36 +28,36 @@ Graph parseGraphFile(const std::string& filename) {
         }
         else if (type == '-') {
             std::string source, target;
-            iss >> source >> target;
-            graph.addEdge(source, target);
+            int weight;
+            if (!(iss >> source >> target >> weight)) continue;
+            graph.addEdge(source, target, weight);
         }
     }
 
     return graph;
 }
 
-void printNodes(const std::vector<std::string>& nodes) {
-    std::cout << "Nodes: ";
-    for (const auto& node : nodes) {
-        std::cout << node << " ";
+void printPath(const Path& path, const std::string& pathType) {
+    if (path.nodes.empty()) {
+        std::cout << "No " << pathType << " exists" << std::endl;
+        return;
     }
-    std::cout << std::endl;
-}
 
-void printEdges(const std::vector<std::pair<std::string, std::string>>& edges) {
-    std::cout << "Edges: ";
-    for (const auto& edge : edges) {
-        std::cout << "(" << edge.first << "," << edge.second << ") ";
+    std::cout << pathType << ": ";
+    for (size_t i = 0; i < path.nodes.size(); i++) {
+        std::cout << path.nodes[i];
+        if (i < path.nodes.size() - 1) std::cout << " -> ";
     }
-    std::cout << std::endl;
+    std::cout << " with weight/length=" << path.totalWeight << std::endl;
 }
 
 void runTerminal(Graph& graph) {
     std::string command;
     std::cout << "Graph Terminal Started\n";
-    std::cout << "Available commands: nodes, node x, edges, edge a b, exit\n";
+    std::cout << "Available commands:\n  nodes\n  node x\n  edges\n  edge a b\n";
+    std::cout << "  path a b\n  shortest-path a b\n  prime-path a b\n  shortest-prime-path a b\n";
+    std::cout << "  toggle (switches between parallel/sequential)\n  exit\n";
     std::cout << "Current mode: " << (useParallel ? "parallel" : "sequential") << "\n";
-
 
     while (true) {
         std::cout << "\nEnter command: ";
@@ -66,49 +66,38 @@ void runTerminal(Graph& graph) {
         std::string cmd;
         iss >> cmd;
 
-        if (cmd == "exit") {
-            break;
-        }
+        if (cmd == "exit") break;
         else if (cmd == "toggle") {
             useParallel = !useParallel;
             std::cout << "Switched to " << (useParallel ? "parallel" : "sequential") << " mode\n";
         }
-        else if (cmd == "node") {
-            std::string node;
-            iss >> node;
-            bool exists = useParallel ?
-                graph.parallelHasNode(node) :
-                graph.hasNode(node);
-            std::cout << "Node " << node << (exists ? " exists" : " does not exist")
-                << " in the graph\n";
+        else if (cmd == "nodes") {
+            auto nodes = graph.getNodes();
+            for (const auto& node : nodes) std::cout << node << "\n";
         }
-        else if (cmd == "edge") {
-            std::string source, target;
-            iss >> source >> target;
-            bool exists = useParallel ?
-                graph.parallelHasEdge(source, target) :
-                graph.hasEdge(source, target);
-            std::cout << "Edge (" << source << "," << target << ")"
-                << (exists ? " exists" : " does not exist")
-                << " in the graph\n";
+        else if (cmd == "edges") {
+            auto edges = graph.getEdges();
+            for (const auto& edge : edges) {
+                std::cout << edge.source << " " << edge.target << " " << edge.weight << "\n";
+            }
         }
-        else if (cmd == "path") {
+        else if (cmd == "path" || cmd == "shortest-path" || cmd == "prime-path" || cmd == "shortest-prime-path") {
             std::string start, end;
-            iss >> start >> end;
-            auto path = useParallel ?
-                graph.parallelFindPath(start, end) :
-                graph.findPath(start, end);
-            if (!path.empty()) {
-                std::cout << "Path found: ";
-                for (size_t i = 0; i < path.size(); i++) {
-                    std::cout << path[i];
-                    if (i < path.size() - 1) std::cout << " -> ";
-                }
-                std::cout << std::endl;
+            if (!(iss >> start >> end)) {
+                std::cout << "Invalid arguments for " << cmd << "\n";
+                continue;
             }
-            else {
-                std::cout << "No path from " << start << " to " << end << std::endl;
-            }
+            Path path = (useParallel ?
+                (cmd == "path" ? graph.parallelFindPath(start, end) :
+                    cmd == "shortest-path" ? graph.parallelFindShortestPath(start, end) :
+                    cmd == "prime-path" ? graph.parallelFindPrimePath(start, end) :
+                    graph.parallelFindShortestPrimePath(start, end))
+                :
+                (cmd == "path" ? graph.findPath(start, end) :
+                    cmd == "shortest-path" ? graph.findShortestPath(start, end) :
+                    cmd == "prime-path" ? graph.findPrimePath(start, end) :
+                    graph.findShortestPrimePath(start, end)));
+            printPath(path, cmd);
         }
         else {
             std::cout << "Invalid command\n";
@@ -116,18 +105,16 @@ void runTerminal(Graph& graph) {
     }
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     std::string filename;
-    std::cout << "Enter graph file name: ";
-    std::getline(std::cin, filename);
+    if (argc > 1) filename = argv[1];
+    else {
+        std::cout << "Enter graph file name: ";
+        std::getline(std::cin, filename);
+    }
 
     Graph graph = parseGraphFile(filename);
-
-    /*
-    GraphVisualizer visualizer(graph);
-    visualizer.run();
-    */
     runTerminal(graph);
-
     return 0;
 }
+

@@ -1,3 +1,4 @@
+/*
 #pragma once
 #include <SFML/Graphics.hpp>
 #include "Graph.h"
@@ -24,3 +25,5 @@ public:
     GraphVisualizer(Graph& g);
     void run();
 };
+
+*/

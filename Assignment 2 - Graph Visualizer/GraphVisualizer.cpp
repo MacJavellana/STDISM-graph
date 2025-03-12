@@ -1,3 +1,5 @@
+
+/*
 #include "GraphVisualizer.h"
 #include <cmath>
 
@@ -149,3 +151,5 @@ void GraphVisualizer::run() {
         window.display();
     }
 }
+
+*/
