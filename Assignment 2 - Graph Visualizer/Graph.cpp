@@ -1,14 +1,42 @@
 #include "Graph.h"
 #include <algorithm>
-#include <queue>
-#include <limits>
-#include <thread>
-#include <future>
-#include <stack>
+#include <cmath>
+
+ThreadPool::ThreadPool(size_t threads) : stop(false) {
+    for (size_t i = 0; i < threads; ++i) {
+        workers.emplace_back([this] {
+            while (true) {
+                std::function<void()> task;
+                {
+                    std::unique_lock<std::mutex> lock(queue_mutex);
+                    condition.wait(lock, [this] { return stop || !tasks.empty(); });
+                    if (stop && tasks.empty()) return;
+                    task = std::move(tasks.front());
+                    tasks.pop();
+                }
+                task();
+            }
+            });
+    }
+}
+
+ThreadPool::~ThreadPool() {
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        stop = true;
+    }
+    condition.notify_all();
+    for (std::thread& worker : workers) {
+        worker.join();
+    }
+}
 
 bool Graph::isPrime(int n) const {
     if (n <= 1) return false;
-    for (int i = 2; i * i <= n; i++) {
+    if (n == 2) return true;
+    if (n % 2 == 0) return false;
+
+    for (int i = 3; i <= sqrt(n); i += 2) {
         if (n % i == 0) return false;
     }
     return true;
@@ -16,15 +44,11 @@ bool Graph::isPrime(int n) const {
 
 void Graph::addNode(const std::string& node) {
     nodes.insert(node);
-    if (edges.find(node) == edges.end()) {
-        edges[node] = std::map<std::string, int>();
-    }
 }
 
 void Graph::addEdge(const std::string& source, const std::string& target, int weight) {
-    if (hasNode(source) && hasNode(target)) {
-        edges[source][target] = weight;
-    }
+    if (!hasNode(source) || !hasNode(target)) return;
+    edges[source][target] = weight;
 }
 
 bool Graph::hasNode(const std::string& node) const {
@@ -33,10 +57,8 @@ bool Graph::hasNode(const std::string& node) const {
 
 bool Graph::hasEdge(const std::string& source, const std::string& target) const {
     auto it = edges.find(source);
-    if (it != edges.end()) {
-        return it->second.find(target) != it->second.end();
-    }
-    return false;
+    if (it == edges.end()) return false;
+    return it->second.find(target) != it->second.end();
 }
 
 std::vector<std::string> Graph::getNodes() const {
@@ -44,224 +66,102 @@ std::vector<std::string> Graph::getNodes() const {
 }
 
 std::vector<Edge> Graph::getEdges() const {
-    std::vector<Edge> edgeList;
-    for (const auto& sourceEntry : edges) {
-        for (const auto& targetEntry : sourceEntry.second) {
-            edgeList.emplace_back(sourceEntry.first, targetEntry.first, targetEntry.second);
+    std::vector<Edge> result;
+    for (const auto& source : edges) {
+        for (const auto& target : source.second) {
+            result.emplace_back(source.first, target.first, target.second);
         }
     }
-    return edgeList;
+    return result;
+}
+
+void Graph::findAllPathsDFS(const std::string& current, const std::string& end,
+    std::unordered_set<std::string>& visited, Path& currentPath,
+    std::vector<Path>& result, bool primeOnly) const {
+    if (current == end) {
+        if (!primeOnly || isPrime(currentPath.totalWeight)) {
+            result.push_back(currentPath);
+        }
+        return;
+    }
+
+    visited.insert(current);
+    auto it = edges.find(current);
+    if (it != edges.end()) {
+        for (const auto& [next, weight] : it->second) {
+            if (visited.find(next) == visited.end()) {
+                currentPath.nodes.push_back(next);
+                currentPath.totalWeight += weight;
+                findAllPathsDFS(next, end, visited, currentPath, result, primeOnly);
+                currentPath.nodes.pop_back();
+                currentPath.totalWeight -= weight;
+            }
+        }
+    }
+    visited.erase(current);
+}
+
+std::vector<Path> Graph::findAllPaths(const std::string& start, const std::string& end, bool primeOnly) const {
+    std::vector<Path> result;
+    if (!hasNode(start) || !hasNode(end)) return result;
+
+    Path currentPath;
+    currentPath.nodes.push_back(start);
+    std::unordered_set<std::string> visited;
+    findAllPathsDFS(start, end, visited, currentPath, result, primeOnly);
+    return result;
+}
+
+Path Graph::getShortestPath(const std::vector<Path>& paths) const {
+    if (paths.empty()) return Path();
+    return *std::min_element(paths.begin(), paths.end(),
+        [](const Path& a, const Path& b) { return a.totalWeight < b.totalWeight; });
 }
 
 Path Graph::findPath(const std::string& start, const std::string& end) const {
-    std::map<std::string, std::string> parent;
-    std::map<std::string, int> distance;
-    std::queue<std::string> q;
-
-    q.push(start);
-    parent[start] = "";
-    distance[start] = 0;
-
-    Path result;
-    bool found = false;
-
-    while (!q.empty() && !found) {
-        std::string current = q.front();
-        q.pop();
-
-        const auto& neighbors = edges.at(current);
-        for (const auto& neighborEntry : neighbors) {
-            const std::string& neighbor = neighborEntry.first;
-            int weight = neighborEntry.second;
-
-            if (parent.find(neighbor) == parent.end()) {
-                parent[neighbor] = current;
-                distance[neighbor] = distance[current] + weight;
-                q.push(neighbor);
-
-                if (neighbor == end) {
-                    found = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    if (found) {
-        std::string current = end;
-        while (!current.empty()) {
-            result.nodes.insert(result.nodes.begin(), current);
-            current = parent[current];
-        }
-        result.totalWeight = distance[end];
-    }
-
-    return result;
+    auto paths = findAllPaths(start, end);
+    return paths.empty() ? Path() : paths[0];
 }
 
 Path Graph::findShortestPath(const std::string& start, const std::string& end) const {
-    std::map<std::string, int> distance;
-    std::map<std::string, std::string> parent;
-
-    for (const auto& node : nodes) {
-        distance[node] = std::numeric_limits<int>::max();
-    }
-    distance[start] = 0;
-
-    std::priority_queue<std::pair<int, std::string>,
-        std::vector<std::pair<int, std::string>>,
-        std::greater<>> pq;
-    pq.push(std::make_pair(0, start));
-
-    while (!pq.empty()) {
-        int dist = pq.top().first;
-        std::string current = pq.top().second;
-        pq.pop();
-
-        if (current == end) break;
-        if (dist > distance[current]) continue;
-
-        const auto& neighbors = edges.at(current);
-        for (const auto& neighborEntry : neighbors) {
-            const std::string& neighbor = neighborEntry.first;
-            int weight = neighborEntry.second;
-
-            int newDist = distance[current] + weight;
-            if (newDist < distance[neighbor]) {
-                distance[neighbor] = newDist;
-                parent[neighbor] = current;
-                pq.push(std::make_pair(newDist, neighbor));
-            }
-        }
-    }
-
-    Path result;
-    if (distance[end] != std::numeric_limits<int>::max()) {
-        std::string current = end;
-        while (!current.empty()) {
-            result.nodes.insert(result.nodes.begin(), current);
-            if (current == start) break;
-            current = parent[current];
-        }
-        result.totalWeight = distance[end];
-    }
-    return result;
+    auto paths = findAllPaths(start, end);
+    return getShortestPath(paths);
 }
 
 Path Graph::findPrimePath(const std::string& start, const std::string& end) const {
-    std::vector<Path> allPaths;
-    std::stack<std::pair<std::string, Path>> stack;
-    std::set<std::string> visited;
-
-    Path initialPath;
-    initialPath.nodes.push_back(start);
-    initialPath.totalWeight = 0;
-    stack.push({ start, initialPath });
-    visited.insert(start);
-
-    while (!stack.empty()) {
-        std::string current = stack.top().first;
-        Path path = stack.top().second;
-        stack.pop();
-
-        if (current == end && isPrime(path.totalWeight)) {
-            allPaths.push_back(path);
-            continue;
-        }
-
-        const auto& neighbors = edges.at(current);
-        for (const auto& neighborEntry : neighbors) {
-            const std::string& neighbor = neighborEntry.first;
-            int weight = neighborEntry.second;
-
-            if (visited.find(neighbor) == visited.end()) {
-                Path newPath = path;
-                newPath.nodes.push_back(neighbor);
-                newPath.totalWeight += weight;
-                visited.insert(neighbor);
-                stack.push({ neighbor, newPath });
-            }
-        }
-    }
-
-    if (!allPaths.empty()) {
-        return allPaths[0];
-    }
-    return Path();
+    auto paths = findAllPaths(start, end, true);
+    return paths.empty() ? Path() : paths[0];
 }
 
 Path Graph::findShortestPrimePath(const std::string& start, const std::string& end) const {
-    Path shortestPrime;
-    shortestPrime.totalWeight = std::numeric_limits<int>::max();
-
-    std::stack<std::pair<std::string, Path>> stack;
-    std::set<std::string> visited;
-
-    Path initialPath;
-    initialPath.nodes.push_back(start);
-    initialPath.totalWeight = 0;
-    stack.push({ start, initialPath });
-    visited.insert(start);
-
-    while (!stack.empty()) {
-        std::string current = stack.top().first;
-        Path path = stack.top().second;
-        stack.pop();
-
-        if (current == end && isPrime(path.totalWeight) && path.totalWeight < shortestPrime.totalWeight) {
-            shortestPrime = path;
-            continue;
-        }
-
-        const auto& neighbors = edges.at(current);
-        for (const auto& neighborEntry : neighbors) {
-            const std::string& neighbor = neighborEntry.first;
-            int weight = neighborEntry.second;
-
-            if (visited.find(neighbor) == visited.end() &&
-                path.totalWeight + weight < shortestPrime.totalWeight) {
-                Path newPath = path;
-                newPath.nodes.push_back(neighbor);
-                newPath.totalWeight += weight;
-                visited.insert(neighbor);
-                stack.push({ neighbor, newPath });
-            }
-        }
-    }
-
-    if (shortestPrime.totalWeight == std::numeric_limits<int>::max()) {
-        return Path();
-    }
-    return shortestPrime;
+    auto paths = findAllPaths(start, end, true);
+    return getShortestPath(paths);
 }
 
-Path Graph::parallelFindPathHelper(const std::string& start, const std::string& end,
+Path Graph::parallelPathHelper(const std::string& start, const std::string& end,
     std::function<Path(const std::string&, const std::string&)> findFunction) {
+    const int NUM_TASKS = std::thread::hardware_concurrency();
     std::vector<std::future<Path>> futures;
-    std::mutex resultMutex;
+    std::mutex mtx;
     Path bestPath;
     std::atomic<bool> found{ false };
 
-    const auto& startNeighbors = edges[start];
-    for (const auto& neighborEntry : startNeighbors) {
-        const std::string& neighbor = neighborEntry.first;
-        int weight = neighborEntry.second;
-
-        futures.push_back(std::async(std::launch::async, [&, neighbor, weight]() {
-            if (!found) {
-                Path path = findFunction(neighbor, end);
-                if (!path.nodes.empty()) {
-                    std::lock_guard<std::mutex> lock(resultMutex);
-                    if (!found) {
-                        path.nodes.insert(path.nodes.begin(), start);
-                        path.totalWeight += weight;
-                        bestPath = path;
-                        found = true;
+    for (int i = 0; i < NUM_TASKS; i++) {
+        futures.push_back(
+            pool.enqueue([&, i]() {
+                if (!found) {
+                    Path path = findFunction(start, end);
+                    if (!path.nodes.empty()) {
+                        std::lock_guard<std::mutex> lock(mtx);
+                        if (!found) {
+                            bestPath = path;
+                            found = true;
+                        }
                     }
                 }
-            }
-            return Path();
-            }));
+                return Path();
+                })
+        );
     }
 
     for (auto& future : futures) {
@@ -272,45 +172,21 @@ Path Graph::parallelFindPathHelper(const std::string& start, const std::string& 
 }
 
 Path Graph::parallelFindPath(const std::string& start, const std::string& end) {
-    return parallelFindPathHelper(start, end, [this](const std::string& s, const std::string& e) {
-        return findPath(s, e);
-        });
+    return parallelPathHelper(start, end,
+        [this](const std::string& s, const std::string& e) { return findPath(s, e); });
 }
 
 Path Graph::parallelFindShortestPath(const std::string& start, const std::string& end) {
-    return parallelFindPathHelper(start, end, [this](const std::string& s, const std::string& e) {
-        return findShortestPath(s, e);
-        });
+    return parallelPathHelper(start, end,
+        [this](const std::string& s, const std::string& e) { return findShortestPath(s, e); });
 }
 
 Path Graph::parallelFindPrimePath(const std::string& start, const std::string& end) {
-    if (hasEdge(start, end)) {
-        int directWeight = edges.at(start).at(end);
-        if (isPrime(directWeight)) {
-            Path directPath;
-            directPath.nodes = { start, end };
-            directPath.totalWeight = directWeight;
-            return directPath;
-        }
-    }
-
-    return parallelFindPathHelper(start, end, [this](const std::string& s, const std::string& e) {
-        return findPrimePath(s, e);
-        });
+    return parallelPathHelper(start, end,
+        [this](const std::string& s, const std::string& e) { return findPrimePath(s, e); });
 }
 
 Path Graph::parallelFindShortestPrimePath(const std::string& start, const std::string& end) {
-    if (hasEdge(start, end)) {
-        int directWeight = edges.at(start).at(end);
-        if (isPrime(directWeight)) {
-            Path directPath;
-            directPath.nodes = { start, end };
-            directPath.totalWeight = directWeight;
-            return directPath;
-        }
-    }
-
-    return parallelFindPathHelper(start, end, [this](const std::string& s, const std::string& e) {
-        return findShortestPrimePath(s, e);
-        });
+    return parallelPathHelper(start, end,
+        [this](const std::string& s, const std::string& e) { return findShortestPrimePath(s, e); });
 }

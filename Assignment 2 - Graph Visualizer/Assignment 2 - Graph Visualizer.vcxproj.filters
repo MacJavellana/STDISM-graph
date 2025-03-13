@@ -41,6 +41,5 @@
   </ItemGroup>
   <ItemGroup>
     <Text Include="sample_graph.txt" />
-    <Text Include="sample_graph2.txt" />
   </ItemGroup>
 </Project>
