@@ -33,9 +33,10 @@ void parseGraphFile(const std::string& filename, Graph& graph) {
 
             std::istringstream iss(edgeInfo);
             std::string source, target;
-            int weight;
+            uint64_t weight;
+            
             iss >> source >> target >> weight;
-
+            
             if (iss) {
                 graph.addEdge(source, target, weight);
             }
@@ -54,7 +55,7 @@ void printPath(const Path& path, const std::string& pathType) {
         std::cout << path.nodes[i];
         if (i < path.nodes.size() - 1) std::cout << " -> ";
     }
-    std::cout << " with weight/length=" << path.totalWeight << std::endl;
+    std::cout << " with weight/length=" << (uint64_t)path.totalWeight << std::endl;
 }
 
 void runTerminal(Graph& graph) {
