@@ -42,15 +42,15 @@ public:
 struct Edge {
     std::string source;
     std::string target;
-    int weight;
-    Edge(const std::string& s, const std::string& t, int w)
+    uint64_t weight;
+    Edge(const std::string& s, const std::string& t, uint64_t w)
         : source(s), target(t), weight(w) {
     }
 };
 
 struct Path {
     std::vector<std::string> nodes;
-    int totalWeight;
+    uint64_t totalWeight;
     Path() : totalWeight(0) {}
 };
 
@@ -69,14 +69,14 @@ struct Agent {
 class Graph {
 private:
     std::set<std::string> nodes;
-    std::map<std::string, std::map<std::string, int>> edges;
+    std::map<std::string, std::map<std::string, uint64_t>> edges;
     mutable ThreadPool pool;
     std::map<std::string, NodeInfo> node_info;
     std::vector<Agent> agents;
     mutable std::mutex agents_mutex;
     mutable std::mutex log_mutex;
 
-    bool isPrime(int n) const;
+    bool isPrime(uint64_t n) const;
     std::vector<Path> findAllPaths(const std::string& start, const std::string& end, bool primeOnly = false) const;
     void findAllPathsDFS(const std::string& current, const std::string& end,
         std::unordered_set<std::string>& visited, Path& currentPath,
@@ -95,7 +95,7 @@ public:
     Graph& operator=(Graph&&) = default;
 
     void addNode(const std::string& node);
-    void addEdge(const std::string& source, const std::string& target, int weight);
+    void addEdge(const std::string& source, const std::string& target, uint64_t weight);
     bool hasNode(const std::string& node) const;
     bool hasEdge(const std::string& source, const std::string& target) const;
     std::vector<std::string> getNodes() const;

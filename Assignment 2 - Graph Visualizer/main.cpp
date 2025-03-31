@@ -55,7 +55,7 @@ void printPath(const Path& path, const std::string& pathType) {
         std::cout << path.nodes[i];
         if (i < path.nodes.size() - 1) std::cout << " -> ";
     }
-    std::cout << " with weight/length=" << path.totalWeight << std::endl;
+    std::cout << " with weight/length=" << (uint64_t)path.totalWeight << std::endl;
 }
 
 void runTerminal(Graph& graph) {

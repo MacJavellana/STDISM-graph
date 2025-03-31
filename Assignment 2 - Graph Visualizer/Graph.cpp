@@ -35,23 +35,26 @@ ThreadPool::~ThreadPool() {
     }
 }
 
-bool Graph::isPrime(int n) const {
+bool Graph::isPrime(uint64_t n) const {
     if (n <= 1) return false;
-    if (n == 2) return true;
-    if (n % 2 == 0) return false;
+    if (n == 2 || n == 3) return true; // 2 and 3 are prime
+    if (n % 2 == 0 || n % 3 == 0) return false; // Eliminate even numbers and multiples of 3
 
-    for (int i = 3; i <= sqrt(n); i += 2) {
-        if (n % i == 0) return false;
+    uint64_t limit = sqrt(n); // Compute sqrt(n) once
+    for (int i = 5; i <= limit; i += 6) {
+        if (n % i == 0 || n % (i + 2) == 0) return false;
     }
     return true;
 }
+
 
 void Graph::addNode(const std::string& node) {
     nodes.insert(node);
     node_info[node]; // Ensure NodeInfo exists
 }
 
-void Graph::addEdge(const std::string& source, const std::string& target, int weight) {
+void Graph::addEdge(const std::string& source, const std::string& target, uint64_t weight) {
+
     if (!hasNode(source) || !hasNode(target)) return;
     edges[source][target] = weight;
 }
