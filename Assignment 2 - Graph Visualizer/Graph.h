@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <functional>
 #include <future>
+#include <random>
 
 class ThreadPool {
 private:
@@ -53,11 +54,27 @@ struct Path {
     Path() : totalWeight(0) {}
 };
 
+struct NodeInfo {
+    std::mutex mtx;
+    std::string agent_name;
+};
+
+struct Agent {
+    std::string name;
+    std::string current_node;
+    std::string destination_node;
+    int required_edge_weight;
+};
+
 class Graph {
 private:
     std::set<std::string> nodes;
     std::map<std::string, std::map<std::string, int>> edges;
     mutable ThreadPool pool;
+    std::map<std::string, NodeInfo> node_info;
+    std::vector<Agent> agents;
+    mutable std::mutex agents_mutex;
+    mutable std::mutex log_mutex;
 
     bool isPrime(int n) const;
     std::vector<Path> findAllPaths(const std::string& start, const std::string& end, bool primeOnly = false) const;
@@ -67,9 +84,11 @@ private:
     Path getShortestPath(const std::vector<Path>& paths) const;
     Path parallelPathHelper(const std::string& start, const std::string& end,
         std::function<Path(const std::string&, const std::string&)> findFunction);
-
+    std::vector<Edge> getEdgesFrom(const std::string& source, int weight) const;
+    void agentThread(Agent agent);
+    void logReachedDestination(const std::string& agent_name, const std::string& node);
 public:
-    Graph() : pool(8) {} // just adjust the no. of threads
+    Graph() : pool(8) {}
     Graph(const Graph&) = delete;
     Graph& operator=(const Graph&) = delete;
     Graph(Graph&&) = default;
@@ -91,4 +110,11 @@ public:
     Path parallelFindShortestPath(const std::string& start, const std::string& end);
     Path parallelFindPrimePath(const std::string& start, const std::string& end);
     Path parallelFindShortestPrimePath(const std::string& start, const std::string& end);
+
+    void addAgent(const std::string& agent_name, const std::string& initial_node);
+    void simulateAgents();
+    void log(const std::string& message) const;
+    void logInitialNodes() const;
+    void logInitialEdges() const;
+    void logInitialAgents() const;
 };

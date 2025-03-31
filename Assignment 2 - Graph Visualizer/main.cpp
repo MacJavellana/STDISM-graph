@@ -18,25 +18,26 @@ void parseGraphFile(const std::string& filename, Graph& graph) {
     while (std::getline(file, line)) {
         if (line.empty()) continue;
 
-        // Remove leading/trailing whitespace
         line.erase(0, line.find_first_not_of(" \t"));
         line.erase(line.find_last_not_of(" \t") + 1);
 
         if (line[0] == '*') {
-            std::string node = line.substr(1);
-            node.erase(0, node.find_first_not_of(" \t"));
-            graph.addNode(node);
+            std::string nodePart = line.substr(1);
+            std::istringstream iss(nodePart);
+            std::string nodeName, agentName;
+            iss >> nodeName;
+            if (iss >> agentName) {
+                graph.addAgent(agentName, nodeName);
+            }
+            graph.addNode(nodeName);
         }
         else if (line[0] == '-') {
             std::string edgeInfo = line.substr(1);
             edgeInfo.erase(0, edgeInfo.find_first_not_of(" \t"));
-
             std::istringstream iss(edgeInfo);
             std::string source, target;
             int weight;
-            iss >> source >> target >> weight;
-
-            if (iss) {
+            if (iss >> source >> target >> weight) {
                 graph.addEdge(source, target, weight);
             }
         }
@@ -130,6 +131,9 @@ void runTerminal(Graph& graph) {
                 graph.findShortestPrimePath(start, end);
             printPath(path, "shortest prime path");
         }
+        else if (cmd == "simulate-agents") {
+            graph.simulateAgents();
+        }
         else {
             std::cout << "Unknown command" << std::endl;
         }
@@ -146,8 +150,8 @@ int main(int argc, char* argv[]) {
         std::getline(std::cin, filename);
     }
 
-    Graph graph;  // Create graph first
-    parseGraphFile(filename, graph);  // Pass by reference
+    Graph graph;
+    parseGraphFile(filename, graph);
     runTerminal(graph);
 
     return 0;
