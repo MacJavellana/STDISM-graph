@@ -296,12 +296,104 @@ void Graph::logReachedDestination(const std::string& agent_name, const std::stri
     oss << "Agent " << agent_name << " reaches node " << node << " and is removed from the graph.";
     log(oss.str());
 }
+
+Path Graph::findPathWithRequiredWeight(const std::string& start, const std::string& end, int requiredWeight) const {
+    std::vector<Path> allPaths;
+    Path currentPath;
+    currentPath.nodes.push_back(start);
+    std::unordered_set<std::string> visited;
+
+    findPathWithWeightDFS(start, end, visited, currentPath, allPaths, requiredWeight);
+
+    // Return the shortest valid path
+    return getShortestPath(allPaths);
+}
+
+void Graph::findPathWithWeightDFS(const std::string& current, const std::string& end,
+    std::unordered_set<std::string>& visited, Path& currentPath,
+    std::vector<Path>& result, int requiredWeight) const {
+    if (current == end) {
+        result.push_back(currentPath);
+        return;
+    }
+
+    visited.insert(current);
+    auto it = edges.find(current);
+    if (it != edges.end()) {
+        for (const auto& [next, weight] : it->second) {
+            if (visited.find(next) == visited.end() && weight == requiredWeight) {
+                currentPath.nodes.push_back(next);
+                currentPath.totalWeight += weight;
+                findPathWithWeightDFS(next, end, visited, currentPath, result, requiredWeight);
+                currentPath.nodes.pop_back();
+                currentPath.totalWeight -= weight;
+            }
+        }
+    }
+    visited.erase(current);
+}
+
+bool Graph::tryLockPath(const Path& path, const std::string& agentName) {
+    std::vector<std::unique_lock<std::mutex>> locks;
+    std::vector<std::string> lockedNodes;
+
+    // First, sort nodes to prevent deadlocks when locking
+    std::vector<std::string> sortedNodes = path.nodes;
+    std::sort(sortedNodes.begin(), sortedNodes.end());
+
+    // Try to lock all nodes in the path
+    for (const auto& node : sortedNodes) {
+        std::unique_lock<std::mutex> lock(node_info[node].mtx);
+
+        // If node is occupied by another agent, we can't lock the path
+        if (!node_info[node].agent_name.empty() && node_info[node].agent_name != agentName) {
+            // Release all locks we've acquired so far
+            return false;
+        }
+
+        locks.push_back(std::move(lock));
+        lockedNodes.push_back(node);
+    }
+
+    // Mark all nodes as reserved for this agent
+    for (const auto& node : path.nodes) {
+        if (node_info[node].agent_name.empty()) {
+            node_info[node].reserved_by = agentName;
+        }
+    }
+
+    // Release all locks
+    for (auto& lock : locks) {
+        lock.unlock();
+    }
+
+    return true;
+}
+
+void Graph::unlockRemainingNodes(const Path& path, const std::string& currentNode) {
+    bool foundCurrent = false;
+
+    for (const auto& node : path.nodes) {
+        if (node == currentNode) {
+            foundCurrent = true;
+            continue;
+        }
+
+        if (foundCurrent) {
+            std::lock_guard<std::mutex> lock(node_info[node].mtx);
+            if (node_info[node].reserved_by == node_info[currentNode].agent_name) {
+                node_info[node].reserved_by = "";
+            }
+        }
+    }
+}
+
 void Graph::agentThread(Agent agent) {
     std::random_device rd;
     std::mt19937 g(rd());
-    int failed_attempts = 0;
 
     while (true) {
+        // Check if agent has reached destination
         if (agent.current_node == agent.destination_node) {
             logReachedDestination(agent.name, agent.destination_node);
             {
@@ -320,47 +412,52 @@ void Graph::agentThread(Agent agent) {
             return;
         }
 
-        auto possible_edges = getEdgesFrom(agent.current_node, agent.required_edge_weight);
-        if (possible_edges.empty()) {
-            log("Agent " + agent.name + " has no possible edges to move.");
+        // Find a valid path from current node to destination
+        Path path = findPathWithRequiredWeight(agent.current_node, agent.destination_node, agent.required_edge_weight);
+
+        if (path.nodes.empty() || path.nodes.size() < 2) {
+            log("Agent " + agent.name + " cannot find a valid path to destination.");
             return;
         }
 
-        std::shuffle(possible_edges.begin(), possible_edges.end(), g);
+        // Try to lock all nodes in the path
+        bool pathLocked = tryLockPath(path, agent.name);
 
-        bool moved = false;
-        for (const auto& edge : possible_edges) {
-            const std::string& target_node = edge.target;
+        if (pathLocked) {
+            // Move along the locked path
+            for (size_t i = 1; i < path.nodes.size(); i++) {
+                std::string from = path.nodes[i - 1];
+                std::string to = path.nodes[i];
 
-            std::string first = agent.current_node < target_node ? agent.current_node : target_node;
-            std::string second = agent.current_node < target_node ? target_node : agent.current_node;
+                // Update agent position
+                {
+                    std::lock_guard<std::mutex> lock_from(node_info[from].mtx);
+                    node_info[from].agent_name = "";
+                }
+                {
+                    std::lock_guard<std::mutex> lock_to(node_info[to].mtx);
+                    node_info[to].agent_name = agent.name;
+                }
 
-            std::unique_lock<std::mutex> lock_first(node_info[first].mtx, std::defer_lock);
-            std::unique_lock<std::mutex> lock_second(node_info[second].mtx, std::defer_lock);
-            std::lock(lock_first, lock_second);
+                log("Agent " + agent.name + " at node " + from + " jumps to node " + to + ".");
+                agent.current_node = to;
 
-            if (node_info[target_node].agent_name.empty()) {
-                node_info[agent.current_node].agent_name = "";
-                node_info[target_node].agent_name = agent.name;
-                log("Agent " + agent.name + " at node " + agent.current_node + " jumps to node " + target_node + ".");
-                agent.current_node = target_node;
-                moved = true;
-                failed_attempts = 0;
-                break;
+                // If this is the destination, break
+                if (to == agent.destination_node) {
+                    break;
+                }
+
+                // Small delay between moves
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
-            else {
-                log("Agent " + agent.name + " at node " + agent.current_node + " waits for node " + target_node + " to be free.");
-            }
+
+            // Unlock the remaining nodes in the path (if any)
+            unlockRemainingNodes(path, agent.current_node);
         }
-
-        if (!moved) {
-            failed_attempts++;
+        else {
+            // Path locking failed, wait and try again
+            log("Agent " + agent.name + " couldn't secure a path, waiting to try again.");
             std::this_thread::sleep_for(std::chrono::seconds(1));
-            if (failed_attempts >= 3) {
-                log("Deadlock detected involving Agent " + agent.name + ".");
-                log("Resolving deadlock for Agent " + agent.name + ".");
-                failed_attempts = 0;
-            }
         }
     }
 }

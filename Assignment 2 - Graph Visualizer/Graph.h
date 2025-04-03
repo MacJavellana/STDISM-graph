@@ -57,6 +57,7 @@ struct Path {
 struct NodeInfo {
     std::mutex mtx;
     std::string agent_name;
+    std::string reserved_by; // New field to track path reservation
 };
 
 struct Agent {
@@ -87,6 +88,12 @@ private:
     std::vector<Edge> getEdgesFrom(const std::string& source, int weight) const;
     void agentThread(Agent agent);
     void logReachedDestination(const std::string& agent_name, const std::string& node);
+    Path findPathWithRequiredWeight(const std::string& start, const std::string& end, int requiredWeight) const;
+    void findPathWithWeightDFS(const std::string& current, const std::string& end,
+        std::unordered_set<std::string>& visited, Path& currentPath,
+        std::vector<Path>& result, int requiredWeight) const;
+    bool tryLockPath(const Path& path, const std::string& agentName);
+    void unlockRemainingNodes(const Path& path, const std::string& currentNode);
 public:
     Graph() : pool(8) {}
     Graph(const Graph&) = delete;
