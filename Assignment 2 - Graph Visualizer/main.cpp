@@ -2,14 +2,24 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include <chrono>
+#include <string>
+#include <vector>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <thread>
+#include <filesystem>
 
-bool useParallel = true;
+#pragma comment(lib, "ws2_32.lib")
 
+const int PORT = 8080;
+const std::string GRAPH_FOLDER = ".\\graphs\\";
+const int BUFFER_SIZE = 4096;
+
+// Function to parse a graph file and load it into a Graph object
 void parseGraphFile(const std::string& filename, Graph& graph) {
     std::ifstream file(filename);
     std::string line;
-
     if (!file.is_open()) {
         std::cout << "Error opening file: " << filename << std::endl;
         return;
@@ -17,7 +27,6 @@ void parseGraphFile(const std::string& filename, Graph& graph) {
 
     while (std::getline(file, line)) {
         if (line.empty()) continue;
-
         line.erase(0, line.find_first_not_of(" \t"));
         line.erase(line.find_last_not_of(" \t") + 1);
 
@@ -44,115 +53,241 @@ void parseGraphFile(const std::string& filename, Graph& graph) {
     }
 }
 
-void printPath(const Path& path, const std::string& pathType) {
+// Function to format a path as a string
+std::string formatPath(const Path& path, const std::string& pathType) {
+    std::ostringstream oss;
     if (path.nodes.empty()) {
-        std::cout << "No " << pathType << " exists" << std::endl;
-        return;
+        oss << "No " << pathType << " exists";
+        return oss.str();
     }
 
-    std::cout << pathType << ": ";
+    oss << pathType << ": ";
     for (size_t i = 0; i < path.nodes.size(); i++) {
-        std::cout << path.nodes[i];
-        if (i < path.nodes.size() - 1) std::cout << " -> ";
+        oss << path.nodes[i];
+        if (i < path.nodes.size() - 1) oss << " -> ";
     }
-    std::cout << " with weight/length=" << (uint64_t)path.totalWeight << std::endl;
+    oss << " with weight/length=" << (uint64_t)path.totalWeight;
+    return oss.str();
 }
 
-void runTerminal(Graph& graph) {
-    std::string command;
-    std::cout << "Current mode: " << (useParallel ? "parallel" : "sequential") << "\n\n";
+// Function to handle receiving a file from client
+bool receiveFile(SOCKET client_socket, const std::string& filename) {
+    char buffer[BUFFER_SIZE];
+    std::ofstream file(filename, std::ios::binary);
+
+    if (!file.is_open()) {
+        std::cerr << "Failed to open file for writing: " << filename << std::endl;
+        return false;
+    }
+
+    // First receive the file size
+    int64_t fileSize;
+    recv(client_socket, (char*)&fileSize, sizeof(fileSize), 0);
+
+    // Send acknowledgment
+    const char* ack = "ACK";
+    send(client_socket, ack, (int)strlen(ack), 0);
+
+    // Receive the file content
+    int64_t bytesReceived = 0;
+    int n;
+
+    while (bytesReceived < fileSize) {
+        n = recv(client_socket, buffer, min(BUFFER_SIZE, (int)(fileSize - bytesReceived)), 0);
+        if (n <= 0) {
+            std::cerr << "Error receiving file data" << std::endl;
+            file.close();
+            return false;
+        }
+        file.write(buffer, n);
+        bytesReceived += n;
+    }
+
+    file.close();
+    return true;
+}
+
+// Function to handle a client connection
+void handleClient(SOCKET client_socket) {
+    char buffer[BUFFER_SIZE];
+    std::string currentGraphFile;
+    // Create a pointer to Graph so we can recreate it when needed
+    std::unique_ptr<Graph> graph = std::make_unique<Graph>();
+
+    // Create graphs directory if it doesn't exist
+    std::filesystem::create_directory(GRAPH_FOLDER);
 
     while (true) {
-        std::cout << "Enter command: ";
-        std::getline(std::cin, command);
+        // Clear buffer
+        memset(buffer, 0, BUFFER_SIZE);
+
+        // Receive command from client
+        int bytesReceived = recv(client_socket, buffer, BUFFER_SIZE, 0);
+        if (bytesReceived <= 0) {
+            std::cout << "Client disconnected" << std::endl;
+            break;
+        }
+
+        std::string command(buffer);
+        std::cout << "Received command: " << command << std::endl;
+
         std::istringstream iss(command);
         std::string cmd;
         iss >> cmd;
 
-        if (cmd == "exit") {
+        if (cmd == "disconnect") {
+            std::cout << "Client requested disconnect" << std::endl;
+            const char* response = "Disconnected";
+            send(client_socket, response, (int)strlen(response), 0);
             break;
         }
-        else if (cmd == "toggle") {
-            useParallel = !useParallel;
-            std::cout << "Switched to " << (useParallel ? "parallel" : "sequential") << " mode" << std::endl;
-        }
-        else if (cmd == "nodes") {
-            auto nodes = graph.getNodes();
-            for (const auto& node : nodes) {
-                std::cout << "* " << node << std::endl;
+        else if (cmd == "upload") {
+            std::string filename;
+            iss >> filename;
+
+            // Send acknowledgment to start file transfer
+            const char* ready = "READY";
+            send(client_socket, ready, (int)strlen(ready), 0);
+
+            // Receive the file
+            std::string fullPath = GRAPH_FOLDER + filename;
+            if (receiveFile(client_socket, fullPath)) {
+                currentGraphFile = fullPath;
+                // Create a new Graph object instead of trying to assign
+                graph = std::make_unique<Graph>();
+                parseGraphFile(fullPath, *graph);
+
+                const char* response = "File uploaded and graph loaded successfully";
+                send(client_socket, response, (int)strlen(response), 0);
+            }
+            else {
+                const char* response = "Failed to receive file";
+                send(client_socket, response, (int)strlen(response), 0);
             }
         }
-        else if (cmd == "node") {
-            std::string node;
-            iss >> node;
-            std::cout << (graph.hasNode(node) ? "yes" : "no") << std::endl;
-        }
-        else if (cmd == "edges") {
-            auto edges = graph.getEdges();
-            for (const auto& edge : edges) {
-                std::cout << "- " << edge.source << " " << edge.target
-                    << " " << edge.weight << std::endl;
+        else if (cmd == "use") {
+            std::string filename;
+            iss >> filename;
+            std::string fullPath = GRAPH_FOLDER + filename;
+
+            if (std::filesystem::exists(fullPath)) {
+                currentGraphFile = fullPath;
+                // Create a new Graph object instead of trying to assign
+                graph = std::make_unique<Graph>();
+                parseGraphFile(fullPath, *graph);
+
+                const char* response = "Graph loaded successfully";
+                send(client_socket, response, (int)strlen(response), 0);
             }
-        }
-        else if (cmd == "edge") {
-            std::string source, target;
-            iss >> source >> target;
-            std::cout << (graph.hasEdge(source, target) ? "yes" : "no") << std::endl;
-        }
-        else if (cmd == "path") {
-            std::string start, end;
-            iss >> start >> end;
-            Path path = useParallel ?
-                graph.parallelFindPath(start, end) :
-                graph.findPath(start, end);
-            printPath(path, "path");
-        }
-        else if (cmd == "shortest-path") {
-            std::string start, end;
-            iss >> start >> end;
-            Path path = useParallel ?
-                graph.parallelFindShortestPath(start, end) :
-                graph.findShortestPath(start, end);
-            printPath(path, "shortest path");
+            else {
+                const char* response = "Graph file not found";
+                send(client_socket, response, (int)strlen(response), 0);
+            }
         }
         else if (cmd == "prime-path") {
+            if (currentGraphFile.empty()) {
+                const char* response = "No graph loaded. Please upload or use a graph file first.";
+                send(client_socket, response, (int)strlen(response), 0);
+                continue;
+            }
+
             std::string start, end;
             iss >> start >> end;
-            Path path = useParallel ?
-                graph.parallelFindPrimePath(start, end) :
-                graph.findPrimePath(start, end);
-            printPath(path, "prime path");
+
+            // Execute the prime path query
+            Path path = graph->parallelFindPrimePath(start, end);
+            std::string result = formatPath(path, "prime path");
+
+            // Send the result back to the client
+            send(client_socket, result.c_str(), (int)result.length(), 0);
         }
-        else if (cmd == "shortest-prime-path") {
+        else if (cmd == "shortest-path") {
+            if (currentGraphFile.empty()) {
+                const char* response = "No graph loaded. Please upload or use a graph file first.";
+                send(client_socket, response, (int)strlen(response), 0);
+                continue;
+            }
+
             std::string start, end;
             iss >> start >> end;
-            Path path = useParallel ?
-                graph.parallelFindShortestPrimePath(start, end) :
-                graph.findShortestPrimePath(start, end);
-            printPath(path, "shortest prime path");
-        }
-        else if (cmd == "simulate-agents") {
-            graph.simulateAgents();
+
+            // Execute the shortest path query
+            Path path = graph->parallelFindShortestPath(start, end);
+            std::string result = formatPath(path, "shortest path");
+
+            // Send the result back to the client
+            send(client_socket, result.c_str(), (int)result.length(), 0);
         }
         else {
-            std::cout << "Unknown command" << std::endl;
+            const char* response = "Unknown command";
+            send(client_socket, response, (int)strlen(response), 0);
         }
     }
+
+    closesocket(client_socket);
 }
 
-int main(int argc, char* argv[]) {
-    std::string filename;
-    if (argc > 1) {
-        filename = argv[1];
-    }
-    else {
-        std::cout << "Enter graph file name: ";
-        std::getline(std::cin, filename);
+int main() {
+    WSADATA wsaData;
+    SOCKET server_fd = INVALID_SOCKET;
+    SOCKET client_socket = INVALID_SOCKET;
+    struct sockaddr_in address;
+    int addrlen = sizeof(address);
+
+    // Initialize Winsock
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "WSAStartup failed" << std::endl;
+        return 1;
     }
 
-    Graph graph;
-    parseGraphFile(filename, graph);
-    runTerminal(graph);
+    // Create socket
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == INVALID_SOCKET) {
+        std::cerr << "Socket creation error: " << WSAGetLastError() << std::endl;
+        WSACleanup();
+        return 1;
+    }
+
+    // Set up the address structure
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+
+    // Bind the socket
+    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) == SOCKET_ERROR) {
+        std::cerr << "Bind failed: " << WSAGetLastError() << std::endl;
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+
+    // Listen for connections
+    if (listen(server_fd, SOMAXCONN) == SOCKET_ERROR) {
+        std::cerr << "Listen failed: " << WSAGetLastError() << std::endl;
+        closesocket(server_fd);
+        WSACleanup();
+        return 1;
+    }
+
+    std::cout << "Server started on port " << PORT << std::endl;
+    std::cout << "Waiting for connections..." << std::endl;
+
+    // Accept and handle client connections
+    while (true) {
+        if ((client_socket = accept(server_fd, (struct sockaddr*)&address, &addrlen)) == INVALID_SOCKET) {
+            std::cerr << "Accept failed: " << WSAGetLastError() << std::endl;
+            continue;
+        }
+
+        std::cout << "Client connected" << std::endl;
+
+        // Handle client in a new thread
+        std::thread clientThread(handleClient, client_socket);
+        clientThread.detach();
+    }
+
+    // Clean up
+    closesocket(server_fd);
+    WSACleanup();
 
     return 0;
 }
